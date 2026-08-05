@@ -1,11 +1,11 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║   ROADS DIRECTORATE — KINGDOM OF LESOTHO                                     ║
-║   Intersection Traffic Analysis System  (RD-ITAS v1.0)                       ║
-║                                                                              ║
-║   Author  : Kopano Maketekete (BSc Eng — Electrical Intern)                  ║
-║   Ref     : RD/EED/STUDY/2026/07                                             ║
-║   Target  : LNDC | QUEEN 2 | NEDBANK Intersections, Maseru                   ║
+║   ROADS DIRECTORATE — KINGDOM OF LESOTHO                                   ║
+║   Intersection Traffic Analysis System  (RD-ITAS v1.0)                     ║
+║                                                                            ║
+║   Author  : Kopano Maketekete (BSc Eng — Electrical Intern)      ║
+║   Ref     : RD/EED/STUDY/2026/07                                           ║
+║   Target  : LNDC | QUEEN 2 | NEDBANK Intersections, Maseru                 ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 PIPELINE OVERVIEW
@@ -52,6 +52,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
+from collections import deque
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -130,6 +131,9 @@ TAXI_INFO = {"name": "taxi", "pcu": 1.5, "color": (0, 200, 255)}
 PEDESTRIAN_CLASS = 0
 PED_COLOR        = (200,  50, 200)
 PED_WAIT_COLOR   = (255,   0, 255)
+
+# Sliding window modal value for frames
+MODAL_WINDOW_N = 10
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -265,6 +269,18 @@ class VehicleRecord:
     class_name:       str
     pcu:              float                             # PCU value initialization 
     color:            tuple
+
+    # ── NEW: sliding window for modal filter ──────────────────────────────
+    raw_class_history: deque = field(
+        default_factory=lambda: deque(maxlen=MODAL_WINDOW_N)        
+    )
+    raw_area_history: deque = field(
+        default_factory=lambda: deque(maxlen=MODAL_WINDOW_N)
+    )
+    # class name / pcu / color above remain as provisional values
+    # until the modal lock fires at the approach line
+    # After lock they are overwritten with the stable ĉ result
+
     lane:             Optional[str]   = None
     approach_time:    Optional[float] = None
     turn_movement:    Optional[str]   = None
@@ -377,6 +393,7 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
 
     x1, y1, x2, y2 = box                        # extract the bounding box coordinates
     cx, cy = int((x1+x2)/2), int((y1+y2)/2)     # compute the centroid of the bounding box
+    area = (x2 - x1) * (y2 - y1)
 
     vinfo = classify_vehicle(cls_id, box)
     cls_name = vinfo["name"]
@@ -395,27 +412,63 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
         )
 
     rec = vehicles[tid]
-    rec.centroid_history.append((cx, cy, ts))
+    rec.centroid_history.append((cx, cy, ts))   # centroid recording for the vehicle, to track its movement through the intersection - we will use this to determine the speed of the vehicle as it moves through the intersection, and also to determine if it is in the intersection or not.
     if in_box:
         rec.in_intersection = True
 
-    # Need ≥ 2 history points to check crossings
-    if len(rec.centroid_history) < 2 or in_occ or in_out:
-        return color, in_occ
+    # ── NEW S0: accumulate raw YOLO outputs into sliding window ───────────
+    # Do this every frame before the approach line, regardless of occulusion. 
+    # The window self-manages via deque maxlen - no manual trimmming
+    if not rec.counted_approach:
+        rec.raw_class_history.append(cls_id)
+        rec.raw_area_history.append(area)
 
-    p_prev = rec.centroid_history[-2][:2]
+    # Need ≥ 2 history points to check crossings
+    # Gating and Sanity Checks - stops execution if object just been detected (hence only one point), or 
+    # or the vehicle is currently hiden/occluded by another vehicle, like in queues, 
+    # or the vehicle has exited the frame or active tracking zone
+    if len(rec.centroid_history) < 2 or in_occ or in_out:
+        return rec.color, in_occ        # return rec.color not local color - use whatever is locked
+
+    p_prev = rec.centroid_history[-2][:2] # previous spatial position from two frames ago, discarding third dimension data (timestamp through slice)
     p_curr = (cx, cy)
 
     # ── APPROACH LINE crossing ──────────────────────────────────────────────
     if not rec.counted_approach:
         if line_crossed(p_prev, p_curr, APPROACH_LINE[0], APPROACH_LINE[1]):
+
+            # ── NEW: fire modal filter, overwrite class on the record ─────
+            from collections import Counter
+            modal_cls_id = Counter(rec.raw_class_history).most_common(1)[0][0]  # the most counted vehicle type - most stable classification 
+            mean_area = float(sum(rec.raw_area_history) / len(rec.raw_area_history))
+
+            # Run classify_vehicle on the modal class + mean area
+            # This means taxi reclassification also uses the stabilised area, 
+            # not just the noisy single-frame box
+            modal_box_proxy = (0, 0, mean_area**0.5, mean_area**0.5)    # synthetic box for area check
+            modal_info = classify_vehicle(modal_cls_id, modal_box_proxy)
+
+            # Overwrite the record's class fields with stable values
+            rec.class_id    = modal_info.get("class_id", modal_cls_id)
+            rec.class_name  = modal_info.get("name")
+            rec.pcu         = modal_info.get("pcu")
+            rec.color       = modal_info.get("color")
+
+
+            print(f"    MODAL   {ts:7.1f}s | ID {tid:4d} | "
+                  f"window={list(rec.raw_class_history)} → ĉ={rec.class_name} "
+                  f"PCU={rec.pcu:.1f}")
+            # ── end modal filter ──────────────────────────────────────────
+
+
             lane = assign_lane(cx)
             rec.counted_approach = True
             rec.approach_time    = ts
             rec.lane             = lane
 
-            approach_counts[cls_name][lane] += 1
-            approach_pcu[cls_name][lane]    += pcu
+            # Use rec.class_name / rec.pcu - now the stabilised values
+            approach_counts[rec.class_name][lane] += 1
+            approach_pcu[rec.class_name][lane]    += rec.pcu
 
             if last_approach_ts is not None:
                 hw = ts - last_approach_ts
@@ -425,14 +478,14 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
 
             phase = current_phase(ts)
             print(f"  ▶ APPROACH  {ts:7.1f}s | ID {tid:4d} | "
-                  f"{cls_name:<9} | {lane} | PCU {pcu:.1f} | {phase}")
+                  f"{rec.class_name:<9} | {lane} | PCU {rec.pcu:.1f} | {phase}")
 
             csv_events.append({                                         # csv events log
                 "event":    "approach",
                 "time_s":   f"{ts:.2f}",
                 "track_id": tid,
-                "class":    cls_name,
-                "pcu":      pcu,
+                "class":    rec.class_name,     # stabilized
+                "pcu":      rec.pcu,                # stabilized
                 "lane":     lane,
                 "movement": "",
                 "phase":    phase,
@@ -447,8 +500,10 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
                 rec.turn_movement = movement
                 rec.exit_time     = ts
 
-                turn_counts[cls_name][movement] += 1
-                turn_pcu[cls_name][movement]    += pcu
+                # use the updated vehicle parameters after the modal filter which have already corrected the classification
+                # and stored it in the record
+                turn_counts[rec.class_name][movement] += 1
+                turn_pcu[rec.class_name][movement]    += rec.pcu
 
                 color_m = EXIT_COLORS[movement]
                 print(f"  ↳ EXIT      {ts:7.1f}s | ID {tid:4d} | "
@@ -458,8 +513,8 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
                     "event":    "exit_turn",
                     "time_s":   f"{ts:.2f}",
                     "track_id": tid,
-                    "class":    cls_name,
-                    "pcu":      pcu,
+                    "class":    rec.class_name,
+                    "pcu":      rec.pcu,
                     "lane":     rec.lane or "",
                     "movement": movement,
                     "phase":    "",
@@ -467,7 +522,7 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
                 })
                 break
 
-    return color, in_occ
+    return rec.color, in_occ
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -479,6 +534,7 @@ def process_pedestrian(tid: int, box, ts: float):
 
     x1, y1, x2, y2 = box
     cx, cy = int((x1+x2)/2), int((y1+y2)/2)
+    
 
     if tid not in pedestrians:
         pedestrians[tid] = PedestrianRecord(track_id=tid, first_seen=ts)
