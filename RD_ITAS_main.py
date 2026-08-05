@@ -1,11 +1,11 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║   ROADS DIRECTORATE — KINGDOM OF LESOTHO                                   ║
-║   Intersection Traffic Analysis System  (RD-ITAS v1.0)                     ║
-║                                                                            ║
-║   Author  : Kopano Maketekete (BSc Eng Candidate — Electrical Intern)      ║
-║   Ref     : RD/EED/STUDY/2026/07                                           ║
-║   Target  : LNDC | QUEEN 2 | NEDBANK Intersections, Maseru                 ║
+║   ROADS DIRECTORATE — KINGDOM OF LESOTHO                                     ║
+║   Intersection Traffic Analysis System  (RD-ITAS v1.0)                       ║
+║                                                                              ║
+║   Author  : Kopano Maketekete (BSc Eng — Electrical Intern)                  ║
+║   Ref     : RD/EED/STUDY/2026/07                                             ║
+║   Target  : LNDC | QUEEN 2 | NEDBANK Intersections, Maseru                   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 PIPELINE OVERVIEW
