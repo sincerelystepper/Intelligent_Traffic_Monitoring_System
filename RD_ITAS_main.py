@@ -425,7 +425,7 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
 
     # Need ≥ 2 history points to check crossings
     # Gating and Sanity Checks - stops execution if object just been detected (hence only one point), or 
-    # or the vehicle is currently hiden/occluded by another vehicle, like in queues, 
+    # or the vehicle is currently hiden/occluded by another vehicle, like in queues (gotta find a work around on this condition), 
     # or the vehicle has exited the frame or active tracking zone
     if len(rec.centroid_history) < 2 or in_occ or in_out:
         return rec.color, in_occ        # return rec.color not local color - use whatever is locked
@@ -433,7 +433,7 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
     p_prev = rec.centroid_history[-2][:2] # previous spatial position from two frames ago, discarding third dimension data (timestamp through slice)
     p_curr = (cx, cy)
 
-    # ── APPROACH LINE crossing ──────────────────────────────────────────────
+    # ── APPROACH LINE crossing (S0 -> S1 Transition) ──────────────────────────────────────────────
     if not rec.counted_approach:
         if line_crossed(p_prev, p_curr, APPROACH_LINE[0], APPROACH_LINE[1]):
 
@@ -492,7 +492,7 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
                 "speed_ms": "",
             })
 
-    # ── EXIT LINE crossings (turn classification) ───────────────────────────
+    # ── EXIT LINE crossings (S1 -> S2) (turn classification) ───────────────────────────
     if rec.in_intersection and rec.counted_approach and not rec.counted_exit:
         for movement, (ls, le) in EXIT_LINES.items():
             if line_crossed(p_prev, p_curr, ls, le):
