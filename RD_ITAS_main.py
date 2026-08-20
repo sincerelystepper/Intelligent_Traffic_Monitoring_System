@@ -13,7 +13,7 @@ PIPELINE OVERVIEW
 INPUT  : Overhead/elevated video from cherry-picker or cantilever camera.
 
 VEHICLE PIPELINE:
-  1. Detect & classify  —  car | taxi | truck | bus | motorcycle
+  1. Detect & classify  —  car | taxi | truck | bus | motorcycle (COCO Classes only)
   2. Track with ByteTrack (persistent IDs, handles occlusion)
   3. APPROACH LINE  — count every vehicle before stop line (primary count)
   4. Track through INTERSECTION BOX
@@ -27,7 +27,7 @@ PEDESTRIAN PIPELINE:
   3. Track across PEDESTRIAN CROSSING LINE
   4. Measure walking speed  (m/s)  from calibrated pixel displacement
   5. Measure crossing time  (s)  per individual
-  6. Output: flow (ped/hr), mean speed, mean crossing time, min green needed
+  6. Output: flow (ped/hr), mean speed, mean crossing time, min green needed  `
 
 OUTPUTS:
   ├── Live annotated display window  (resizable, pauseable)
@@ -62,7 +62,9 @@ from collections import deque
 
 # ── Files ──────────────────────────────────────────────────────────────────
 VIDEO_PATH   = r"LNDC TRAFFIC LIGHTS\DJI_20260730150924_0167_D.MP4"     # the video filename
-MODEL_PATH   = "yolo11n.pt"                        # or yolo11s.pt for accuracy
+# lets change the model path to something much higher like yolo11m.pt
+#MODEL_PATH  = "yolo11s.pt"                        # or yolo11s.pt for accuracy
+MODEL_PATH   = "yolo11m.pt"                        # or yolo11m.pt for accuracy
 SESSION_TAG  = "LNDC_AM_PEAK"                      # used in output filenames
 
 _ts          = datetime.now().strftime("%Y%m%d_%H%M")  # today's date, right at the point of running of the footage
@@ -112,22 +114,23 @@ PHASE_SCHEDULE = [
 ]
 
 # ── Detection Parameters ────────────────────────────────────────────────────
-CONF_THRESHOLD  = 0.35
+# lets lower the confidence threshold a little bit to allow for more detections, but we will have to filter out the false positives later on in the processing pipeline.
+
+CONF_THRESHOLD  = 0.25
 IOU_THRESHOLD   = 0.50
 
 # ── Vehicle Classes (COCO) + PCU Values ────────────────────────────────────
 # Color format: BGR
 VEHICLE_CLASSES = {
-    2: {"name": "car",        "pcu": 1.0, "color": (0,   220,   0)},
+    2: {"name": "car",        "pcu": 1.0, "color": (0,   220,   0)},    # Includes 4+1 Honda Fits
     3: {"name": "motorcycle", "pcu": 0.5, "color": (0,   220, 220)},
     5: {"name": "bus",        "pcu": 3.0, "color": (220,   0,   0)},
-    7: {"name": "truck",      "pcu": 2.5, "color": (0,   128, 255)},
+    7: {"name": "truck",      "pcu": 2.5, "color": (0,   128, 255)},    # Includes bakkies/vans
 }
-# Taxi detection: YOLO calls Quantum taxis "car" or "truck".
-# If bounding box area exceeds threshold → reclassify as taxi.
-TAXI_AREA_THRESHOLD_PX = 7000   # pixels² — tune from your overhead footage --- we will need to test this as per live footage, to ensure consistency
-TAXI_INFO = {"name": "taxi", "pcu": 1.5, "color": (0, 200, 255)}
 
+# Classifcation is COCO-only. No area-based reclassification, no custom classes. 
+# YOLO's own class predictions is trusted as-is; the modal filter only stabilizes 
+# the reading over the sliding window - it never maps to anything outside COCO
 PEDESTRIAN_CLASS = 0
 PED_COLOR        = (200,  50, 200)
 PED_WAIT_COLOR   = (255,   0, 255)
@@ -174,7 +177,8 @@ CENTER_X = 1953
 
 LANE_DEFINITIONS = {
     "Lane 1": (599, CENTER_X),   # (x_min, x_max) for lane 1, any vehicle whose center point cx is between pixel 607 and pixel 2016 is declared to be in Lane 1
-    "Lane 2": (CENTER_X, 2016),   # (x_min, x_max) for lane 2, any vehicle whosen center point cx is between pixel 2016 and pixel 2265 is declared to be in Lane 2
+    "Lane 2": (CENTER_X, 2265),   # (x_min, x_max) for lane 2, any vehicle whosen center point cx is between pixel 2016 and pixel 2265 is declared to be in Lane 2
+                                    # Changed the lane edge from 2016 to 2265 to allow for the lane 2 vehicles to be counted properly, since the lane 2 vehicles are not being counted properly, and are being declared as unassigned.
 }
 
 # ── Intersection Box ───────────────────────────────────────────────────────
@@ -182,7 +186,7 @@ LANE_DEFINITIONS = {
 # Vehicles are tracked inside here before exit classification.
 INTERSECTION_BOX = np.array([
     [1320, 1203],          # [540, 530]  # top-left
-    [2544, 1212],           # [860, 530]  # top-right
+    [2595, 1161],           # [860, 530]  # top-right
     [2931, 1863],         # [860, 710]  # bottom-right
     [990, 1866],         # [540, 710]  # bottom-left
 ], dtype=np.int32)
@@ -191,10 +195,10 @@ INTERSECTION_BOX = np.array([
 # Place LEFT  line on the left edge of the intersection box
 # Place STRAIGHT line on the bottom edge of the intersection box
 # Place RIGHT line on the right edge of the intersection box
-EXIT_LINES = {
-    "Left":     [(2673, 1233), (2862, 1365)],   # [(540, 580), (540, 700)],
-    "Straight": [(1920, 1833), (2934, 1872)],   # [(600, 710), (800, 710)],
-    "Right":    [(969, 1413), (795, 1572)],   # [(860, 580), (860, 700)]
+EXIT_LINES = {          # we must extent this left side a little
+    "Left":     [(2634, 1170), (3009, 1404)],   # [(540, 580), (540, 700)],  [(2673, 1233), (2862, 1365)],
+    "Straight": [(990, 1968), (2910, 1977)],   # [(600, 710), (800, 710)],
+    "Right":    [(774, 1566), (990, 1380)],   # [(860, 580), (860, 700)]
 }
 EXIT_COLORS = {
     "Left": (255, 220, 0), "Straight": (0, 255, 120), "Right": (255, 140, 0)
@@ -207,14 +211,14 @@ EXIT_COLORS = {
 OCCLUSION_ZONES = [
     # Mokorotlong to intersection approach
     np.array([
-        [990, 1860], [1917, 1806], [1953, 2145], [795, 2148]
+        [990, 2000], [1917, 2000], [1953, 2200], [795, 2200]
     ], dtype=np.int32),
     # Add more zones here if needed:
     # np.array([[x1,y1],[x2,y2],[x3,y3],[x4,y4]], dtype=np.int32),
 
     # ECOL to Intersection approach
     np.array([
-        [5, 413], [1089, 1284], [942, 1410], [30, 1395]
+        [15, 1158], [1089, 1284], [942, 1410], [30, 1395]
     ], dtype=np.int32),
 
     # Intersection to after pedestrian waiting polygon region of interest Pioneer Right Turn approach
@@ -231,6 +235,8 @@ OCCLUSION_ZONES = [
             np.array([
         [2937, 1842], [2628, 1407], [3654, 1440], [3651, 1653]
     ], dtype=np.int32),
+
+
 
 ]
 
@@ -274,9 +280,7 @@ class VehicleRecord:
     raw_class_history: deque = field(
         default_factory=lambda: deque(maxlen=MODAL_WINDOW_N)        
     )
-    raw_area_history: deque = field(
-        default_factory=lambda: deque(maxlen=MODAL_WINDOW_N)
-    )
+    
     # class name / pcu / color above remain as provisional values
     # until the modal lock fires at the approach line
     # After lock they are overwritten with the stable ĉ result
@@ -286,8 +290,8 @@ class VehicleRecord:
     turn_movement:    Optional[str]   = None
     exit_time:        Optional[float] = None
     in_intersection:  bool            = False
-    counted_approach: bool            = False
-    counted_exit:     bool            = False
+    counted_approach: bool            = False       # tracking from ORIGIN (APPROACH_LINE)
+    counted_exit:     bool            = False       # tracking end life DESTINATION (EXIT_LINE crossed on the tripwire)
     centroid_history: list            = field(default_factory=list) # centroid history for the vehicle, to track its movement through the intersection
 
 @dataclass
@@ -325,23 +329,36 @@ def line_crossed(p_prev, p_curr, ls, le) -> bool:
         return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
     d1 = xp(ls, le, p_prev); d2 = xp(ls, le, p_curr)
     d3 = xp(p_prev, p_curr, ls); d4 = xp(p_prev, p_curr, le)
-    return (((d1>0 and d2<0) or (d1<0 and d2>0)) and
-            ((d3>0 and d4<0) or (d3<0 and d4>0)))
+    return (((d1>=0 and d2<=0) or (d1<=0 and d2>=0)) and
+            ((d3>=0 and d4<=0) or (d3<=0 and d4>=0)))
 
+# This is working for lane 1 only but says lane 2 unassigned
 def assign_lane(cx: int) -> str:
-    for name, (lo, hi) in LANE_DEFINITIONS.items():
+    for name, (lo, hi) in LANE_DEFINITIONS.items(): # lets check the LANE_DEFINITIONS dictionary to see if the lane 2 is properly defined, and if it is, then we will check the cx value to see if it falls within the range of lane 2, and if it does, then we will return lane 2 as the assigned lane.
         if lo <= cx <= hi:
             return name
-    return "Unassigned"
+    return "Unassigned"         # we are hitting this issue right here, for lane 2.
 
-def classify_vehicle(cls_id: int, box) -> dict:
-    """Classify vehicle type, catching taxis by bounding box area."""
-    x1, y1, x2, y2 = box
-    area = (x2-x1) * (y2-y1)
-    if cls_id == 2 and area > TAXI_AREA_THRESHOLD_PX:
-        return {**TAXI_INFO, "class_id": 98}   # 98 = internal taxi code
-    return {**VEHICLE_CLASSES.get(cls_id, VEHICLE_CLASSES[2]),
-            "class_id": cls_id}
+# we are changing the area approach completely to the COCO dataset neural network intelligence 
+# Replace the entire classify_vehicle function with a simple lookup table 
+def classify_vehicle(cls_id: int) -> dict:
+    """
+    Simple COCO-only classification.
+    Returns the vehicle's name, PCU, and colour from the VEHICLE_CLASSES dictionary.
+    If the class ID is not found, defaults to "car" with PCU 1.0 and green color (but unknown will be better and more transparent).
+    """
+    info = VEHICLE_CLASSES.get(cls_id)
+
+    if info is None:
+        # Unknown - fallback to car (or we could return a default unknown vehicle info, or choose to skip the vehicle entirely)
+        info = VEHICLE_CLASSES[2]
+    return {
+        "name": info["name"],
+        "pcu": info["pcu"],
+        "color": info["color"],
+        "class_id": cls_id
+    }
+
 
 def current_phase(ts: float) -> str:
     cyc_pos = (ts + VIDEO_START_OFFSET_S) % CYCLE_LENGTH_S
@@ -364,10 +381,13 @@ def pixels_to_metres(px: float) -> float:
 vehicles:    dict[int, VehicleRecord]    = {}
 pedestrians: dict[int, PedestrianRecord] = {}
 
+# Setting up a list of all the vehicles that have been counted at the approach line,
 # Approach counts  [class_name][lane] = count
 approach_counts = defaultdict(lambda: defaultdict(int))
 approach_pcu    = defaultdict(lambda: defaultdict(float))
 
+# This allows us to count turns at the exit line, and also to count the PCU of each turn movement, 
+# which is important for traffic analysis and planning.
 # Turn movement counts  [class_name][movement] = count
 turn_counts = defaultdict(lambda: defaultdict(int))
 turn_pcu    = defaultdict(lambda: defaultdict(float))
@@ -377,7 +397,8 @@ ped_count          = 0
 ped_crossing_times = []
 ped_speeds         = []
 
-# Headway buffer for saturation flow
+# Headway buffer for saturation flow, 
+# Measuring the seconds that pass between two cars hitting the same exact spot
 headways          = []
 last_approach_ts  = None
 
@@ -393,9 +414,9 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
 
     x1, y1, x2, y2 = box                        # extract the bounding box coordinates
     cx, cy = int((x1+x2)/2), int((y1+y2)/2)     # compute the centroid of the bounding box
-    area = (x2 - x1) * (y2 - y1)
+    #area = (x2 - x1) * (y2 - y1)
 
-    vinfo = classify_vehicle(cls_id, box)
+    vinfo = classify_vehicle(cls_id) # classify the vehicle using the COCO dataset and return the class name, pcu and color   
     cls_name = vinfo["name"]
     pcu      = vinfo["pcu"]
     color    = vinfo["color"]
@@ -421,32 +442,35 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
     # The window self-manages via deque maxlen - no manual trimmming
     if not rec.counted_approach:
         rec.raw_class_history.append(cls_id)
-        rec.raw_area_history.append(area)
+        #rec.raw_area_history.append(area)
 
     # Need ≥ 2 history points to check crossings
     # Gating and Sanity Checks - stops execution if object just been detected (hence only one point), or 
     # or the vehicle is currently hiden/occluded by another vehicle, like in queues (gotta find a work around on this condition), 
     # or the vehicle has exited the frame or active tracking zone
-    if len(rec.centroid_history) < 2 or in_occ or in_out:
+
+    #── Gating ────────────────────────────────────────────────────────────────
+    if len(rec.centroid_history) < 2:   # Need ≥ 2 history points for any line crossing test
         return rec.color, in_occ        # return rec.color not local color - use whatever is locked
 
     p_prev = rec.centroid_history[-2][:2] # previous spatial position from two frames ago, discarding third dimension data (timestamp through slice)
     p_curr = (cx, cy)
 
     # ── APPROACH LINE crossing (S0 -> S1 Transition) ──────────────────────────────────────────────
-    if not rec.counted_approach:
-        if line_crossed(p_prev, p_curr, APPROACH_LINE[0], APPROACH_LINE[1]):
+    # Occlusion + outgoing zone suppress approach counting only. 
+    # We still allow the exit check below to run for S1 vehicles.
+    if not rec.counted_approach:                                                # given its false here
+        if not in_occ and not in_out:
+          if line_crossed(p_prev, p_curr, APPROACH_LINE[0], APPROACH_LINE[1]):
 
             # ── NEW: fire modal filter, overwrite class on the record ─────
             from collections import Counter
             modal_cls_id = Counter(rec.raw_class_history).most_common(1)[0][0]  # the most counted vehicle type - most stable classification 
-            mean_area = float(sum(rec.raw_area_history) / len(rec.raw_area_history))
-
+            
             # Run classify_vehicle on the modal class + mean area
             # This means taxi reclassification also uses the stabilised area, 
-            # not just the noisy single-frame box
-            modal_box_proxy = (0, 0, mean_area**0.5, mean_area**0.5)    # synthetic box for area check
-            modal_info = classify_vehicle(modal_cls_id, modal_box_proxy)
+            # not just the noisy single-frame box            
+            modal_info = classify_vehicle(modal_cls_id)                 # Removed modal_box_proxy from here since we are not using it in the classify_vehicle function anymore, as we are now classifying vehicles directly using the COCO dataset predictions, which does not require the bounding box area for classification.
 
             # Overwrite the record's class fields with stable values
             rec.class_id    = modal_info.get("class_id", modal_cls_id)
@@ -454,15 +478,18 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
             rec.pcu         = modal_info.get("pcu")
             rec.color       = modal_info.get("color")
 
+            # Clean up the raw class history listto strip out the NumPy types for industrial-grade logging
+            clean_window = [int(c) for c in rec.raw_class_history]
+
 
             print(f"    MODAL   {ts:7.1f}s | ID {tid:4d} | "
-                  f"window={list(rec.raw_class_history)} → ĉ={rec.class_name} "
-                  f"PCU={rec.pcu:.1f}")
+                  f"window={clean_window} → ĉ={rec.class_name.upper()} "
+                  f"(PCU={rec.pcu:.1f})")
             # ── end modal filter ──────────────────────────────────────────
 
 
             lane = assign_lane(cx)
-            rec.counted_approach = True
+            rec.counted_approach = True                 # update the record to show that the vehicle has been counted at the approach line
             rec.approach_time    = ts
             rec.lane             = lane
 
@@ -480,11 +507,11 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
             print(f"  ▶ APPROACH  {ts:7.1f}s | ID {tid:4d} | "
                   f"{rec.class_name:<9} | {lane} | PCU {rec.pcu:.1f} | {phase}")
 
-            csv_events.append({                                         # csv events log
+            csv_events.append({                     # csv events log
                 "event":    "approach",
                 "time_s":   f"{ts:.2f}",
                 "track_id": tid,
-                "class":    rec.class_name,     # stabilized
+                "class":    rec.class_name,         # stabilized
                 "pcu":      rec.pcu,                # stabilized
                 "lane":     lane,
                 "movement": "",
@@ -493,7 +520,21 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
             })
 
     # ── EXIT LINE crossings (S1 -> S2) (turn classification) ───────────────────────────
-    if rec.in_intersection and rec.counted_approach and not rec.counted_exit:
+    # NOTE: occlusion does NOT block this check
+    # A vehicle in S1 must be tracked to its exit regardsless of occlusion zones (definitely making this persistent tracking a requirement) - we need to track the vehicle through the intersection and classify its turn movement, even if it is occluded,
+    # because the intersection box overlaps several occlusion polygons.
+
+    #Allow exit counting if vehicle was counted at approach OR if it was originated inside the intersection box
+    was_in_intersection = rec.in_intersection or (len(rec.centroid_history) > 0 and in_polygon(rec.centroid_history[0][0], rec.centroid_history[0][1], INTERSECTION_BOX))
+
+    if (rec.counted_approach or was_in_intersection) and not rec.counted_exit:
+
+        # DEBUG: print centroid position of every S1 vehicle every 15 frames
+        # confirms centroid crossing, will remove once TMC is working
+        if len(rec.centroid_history) % 15 == 0:
+            print(f"  [S1 TRACK]  ID {tid:4d} | centroid=({cx},{cy}) | "
+                  f"in_box={in_box} | lane={rec.lane}")
+
         for movement, (ls, le) in EXIT_LINES.items():
             if line_crossed(p_prev, p_curr, ls, le):
                 rec.counted_exit  = True
@@ -507,7 +548,7 @@ def process_vehicle(tid: int, cls_id: int, box, ts: float): # we take the track 
 
                 color_m = EXIT_COLORS[movement]
                 print(f"  ↳ EXIT      {ts:7.1f}s | ID {tid:4d} | "
-                      f"{cls_name:<9} | {movement:<9} | PCU {pcu:.1f}")
+                      f"{rec.class_name:<9} | {movement:<9} | PCU {rec.pcu:.1f}")
 
                 csv_events.append({
                     "event":    "exit_turn",
@@ -719,7 +760,7 @@ def print_summary():
     total_veh = 0
     for cls in all_classes:
         l1 = approach_counts[cls].get("Lane 1", 0)
-        l2 = approach_counts[cls].get("Lane 2", 0)
+        l2 = approach_counts[cls].get("Lane 2", 0)      # We are not getting this lane 2 properly, says unassigned
         t  = l1 + l2
         p1 = approach_pcu[cls].get("Lane 1", 0.0)
         p2 = approach_pcu[cls].get("Lane 2", 0.0)
@@ -878,6 +919,12 @@ def run():
             frame_num += 1
             ts = frame_num / fps
 
+            # Black out cantilever signal head before YOLO sees the frame
+            cantilever_head = np.array([
+                [2328, 1194], [2451, 1191], [2451, 1326], [2334, 1323]
+            ], dtype=np.int32)
+            cv2.fillPoly(frame, [cantilever_head], (0,0,0))
+
             # ── Inference ────────────────────────────────────────────────
             # we must optimize the inference call (biggest memory hog), to simulate the edge node processing behavior
             # we must therefore pass memory-limiting arguments to YOLO to force it to downscale internally, while preserving 
@@ -923,12 +970,24 @@ def run():
                         lbl = rec.class_name if rec else "?"
                         mv  = f"→{rec.turn_movement}" if (rec and rec.turn_movement) else ""
 
-                        thickness = 1 if in_occ else 2
+                        # 1. Thicker bounding boxes for high-res visibility
+                        thickness = 2 if in_occ else 4
                         cv2.rectangle(frame,
                                       (int(x1),int(y1)),(int(x2),int(y2)), col, thickness)
-                        cv2.putText(frame, f"{lbl} {mv} [{tid}]",
-                                    (int(x1), int(y1)-7),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, col, 2)
+                        text_str = f"{lbl.upper()} {mv} [{tid}]"
+                        
+
+                        # 2. Black stroke background for the text (thickness=6)
+                        cv2.putText(frame, text_str,
+                                    (int(x1), int(y1)-12),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,0), 6, cv2.LINE_AA)
+
+                        # 3. Inner colored text (thickness=2, fontScale=1.2)
+                        cv2.putText(frame, text_str,
+                                    (int(x1), int(y1)-12),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, col, 2, cv2.LINE_AA)
+
+                        # 4. Larger centroid dot           
                         cv2.circle(frame, (cx, cy), 3, col, -1)
 
             # ── HUD ───────────────────────────────────────────────────────
